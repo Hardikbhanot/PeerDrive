@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PeerDrive</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f4f4f5; color: #111827; margin: 0; padding: 20px; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        h1 { font-size: 24px; font-weight: 600; margin-bottom: 20px; }
+        .peer-id { background: #f3f4f6; padding: 10px; border-radius: 4px; font-family: monospace; word-break: break-all; font-size: 14px; margin-bottom: 20px; }
+        .btn { background: #3b82f6; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 14px; }
+        .btn:hover { background: #2563eb; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { text-align: left; padding: 12px; border-bottom: 1px solid #e5e7eb; }
+        th { font-weight: 600; color: #6b7280; }
+        #qr-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); align-items: center; justify-content: center; }
+        #qr-box { background: white; padding: 20px; border-radius: 8px; text-align: center; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <h1>PeerDrive Dashboard</h1>
+        
+        <div>
+            <strong>Your Peer ID:</strong>
+            <div class="peer-id" id="peer-id-display">Loading...</div>
+        </div>
+
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 30px;">
+            <h2 style="font-size: 18px; margin: 0;">Your Shares</h2>
+            <div>
+                <button class="btn" style="background: #10b981; margin-right: 10px;" onclick="joinShare()">Join a Share</button>
+                <button class="btn" onclick="createShare()">+ New Share</button>
+            </div>
+        </div>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Target File/Folder</th>
+                    <th>Size</th>
+                    <th>Share ID</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="shares-list">
+                <tr><td colspan="4" style="text-align: center; color: #6b7280;">No active shares</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- QR Code Modal -->
+    <div id="qr-modal" onclick="closeQR()">
+        <div id="qr-box" onclick="event.stopPropagation()">
+            <h2 style="margin-top:0;">Scan to Download</h2>
+            <div id="qrcode" style="margin: 20px auto; width: 256px; height: 256px;"></div>
+            <p id="qr-url" style="font-family: monospace; font-size: 12px; word-break: break-all;"></p>
+            <button class="btn" onclick="closeQR()">Close</button>
+        </div>
+    </div>
+
+    <script>
+        let daemonIp = "";
+        let daemonPort = "";
+        let publicUrl = "";
+
+        async function fetchStatus() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                document.getElementById('peer-id-display').innerText = data.peer_id;
+                daemonIp = data.ip;
+                daemonPort = data.port.split(':')[1] || '8080';
+                publicUrl = data.public_url || "";
+            } catch (err) {
+                console.error("Failed to fetch status:", err);
+                document.getElementById('peer-id-display').innerText = "Error connecting to daemon";
+            }
+        }
+
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        async function fetchShares() {
+            try {
+                const res = await fetch('/api/shares');
+                const shares = await res.json();
+                const list = document.getElementById('shares-list');
+                list.innerHTML = '';
+                
+                if (shares.length === 0) {
+                    list.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #6b7280;">No active shares</td></tr>';
+                    return;
+                }
+
+                shares.forEach(share => {
+                    const pct = share.file_size > 0 ? Math.min(100, Math.round((share.downloaded_bytes / share.file_size) * 100)) : 0;
+                    const progressHtml = share.downloaded_bytes > 0 && share.IsActive ? `
+                        <div style="width: 100%; background: #e5e7eb; border-radius: 4px; height: 10px; margin-top: 5px; overflow: hidden;">
+                            <div style="width: ${pct}%; background: #3b82f6; height: 100%;"></div>
+                        </div>
+                        <div style="font-size: 11px; color: #6b7280; text-align: right; margin-top: 2px;">${formatBytes(share.downloaded_bytes)} / ${formatBytes(share.file_size)} (${pct}%)</div>
+                    ` : `<div style="color: #6b7280; font-size: 13px;">${formatBytes(share.file_size)}</div>`;
+
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td title="${share.Path}">${share.Path.split('/').pop()}</td>
+                        <td>${progressHtml}</td>
+                        <td style="font-family: monospace;">${share.ID}</td>
+                        <td>${share.IsActive ? '<span style="color: green;">Active</span>' : '<span style="color: red;">Revoked</span>'}</td>
+                        <td>
+                            ${share.IsActive ? `
+                                <button class="btn" style="padding: 4px 8px; font-size: 12px; background: #8b5cf6;" onclick="showQR('${share.Token}')">QR Code</button>
+                                <button class="btn" style="padding: 4px 8px; font-size: 12px; background: #10b981;" onclick="authorizePeer('${share.ID}')">Authorize</button>
+                                <button class="btn" style="padding: 4px 8px; font-size: 12px; background: #ef4444;" onclick="revoke('${share.ID}')">Revoke</button>
+                            ` : `<span style="color: #9ca3af; font-size: 12px;">No actions available</span>`}
+                        </td>
+                    `;
+                    list.appendChild(row);
+                });
+            } catch (err) {
+                console.error("Failed to fetch shares:", err);
+            }
+        }
+
+        let qrcodeObj = null;
+        function showQR(token) {
+            const url = publicUrl ? `${publicUrl}/d/${token}` : `http://${daemonIp}:${daemonPort}/d/${token}`;
+            document.getElementById('qr-url').innerText = url;
+            
+            if (qrcodeObj) {
+                qrcodeObj.clear();
+                qrcodeObj.makeCode(url);
+            } else {
+                qrcodeObj = new QRCode(document.getElementById("qrcode"), {
+                    text: url,
+                    width: 256,
+                    height: 256
+                });
+            }
+            
+            document.getElementById('qr-modal').style.display = 'flex';
+        }
+
+        function closeQR() {
+            document.getElementById('qr-modal').style.display = 'none';
+        }
+
+        async function createShare() {
+            try {
+                // 1. Trigger native file picker
+                const dialogRes = await fetch('/api/dialog/file', { method: 'POST' });
+                if (dialogRes.status === 204) {
+                    return; // User cancelled
+                }
+                
+                if (!dialogRes.ok) {
+                    alert("Failed to open file picker");
+                    return;
+                }
+                
+                const dialogData = await dialogRes.json();
+                const path = dialogData.path;
+                if (!path) return;
+
+                // 2. Create the share
+                const res = await fetch('/api/shares', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: path })
+                });
+                
+                if (!res.ok) {
+                    const errText = await res.text();
+                    alert("Error: " + errText);
+                    return;
+                }
+                
+                await fetchShares();
+            } catch (err) {
+                alert("Failed to create share.");
+                console.error(err);
+            }
+        }
+
+        async function authorizePeer(shareID) {
+            const peerID = prompt(`Enter the Peer ID to authorize for ${shareID}:`);
+            if (!peerID) return;
+            
+            try {
+                const res = await fetch(`/api/shares/${shareID}/authorize`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ peer_id: peerID })
+                });
+                if (!res.ok) {
+                    alert("Failed to authorize peer: " + await res.text());
+                } else {
+                    alert("Peer authorized successfully!");
+                }
+            } catch (err) {
+                alert("Error authorizing peer.");
+            }
+        }
+
+        async function joinShare() {
+            const shareID = prompt("Enter the Share ID:");
+            if (!shareID) return;
+            const hostPeerID = prompt("Enter the Host's Peer ID:");
+            if (!hostPeerID) return;
+
+            try {
+                const res = await fetch(`/api/download`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ share_id: shareID, host_peer_id: hostPeerID })
+                });
+                if (!res.ok) {
+                    alert("Failed to join share: " + await res.text());
+                } else {
+                    alert("Successfully joined swarm! Check the host terminal logs to see the data transfer happening.");
+                }
+            } catch (err) {
+                alert("Error joining share.");
+            }
+        }
+
+        async function revoke(id) {
+            if (!confirm(`Are you sure you want to revoke share ${id}? Any active QR codes or downloads will immediately stop working.`)) return;
+            try {
+                const res = await fetch(`/api/shares/${id}/revoke`, { method: 'POST' });
+                if (!res.ok) {
+                    alert("Failed to revoke share: " + await res.text());
+                } else {
+                    await fetchShares();
+                }
+            } catch (err) {
+                alert("Error revoking share.");
+            }
+        }
+
+        fetchStatus();
+        fetchShares();
+        setInterval(fetchShares, 2000); // Auto-refresh UI every 2 seconds
+    </script>
+</body>
+</html>
