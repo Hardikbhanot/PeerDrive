@@ -349,6 +349,14 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	req.ShareID = strings.TrimSpace(req.ShareID)
 	req.HostPeerID = strings.TrimSpace(req.HostPeerID)
 
+	// Add placeholder to DB so it shows up in UI immediately
+	s.db.SaveShare(db.Share{
+		ID:       req.ShareID,
+		Path:     "Downloading from Swarm...",
+		Token:    req.ShareID, // Mock token for leecher
+		IsActive: true,
+	})
+
 	// Tell the share manager to request the share from the host in a goroutine
 	go func() {
 		err := s.shareManager.RequestShare(context.Background(), req.HostPeerID, req.ShareID, func(downloaded int64) {
@@ -358,6 +366,15 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		})
 		if err != nil {
 			fmt.Printf("Download failed: %v\n", err)
+			s.db.RevokeShare(req.ShareID) // Remove from UI on failure
+		} else {
+			// Update the path to the actual downloads folder
+			s.db.SaveShare(db.Share{
+				ID:       req.ShareID,
+				Path:     "downloads/" + req.ShareID,
+				Token:    req.ShareID,
+				IsActive: true,
+			})
 		}
 	}()
 

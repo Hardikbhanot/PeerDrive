@@ -302,6 +302,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         } else if (value == 'copy') {
                           final link = 'peerdrive://$peerId/${share['id']}';
                           Clipboard.setData(ClipboardData(text: link));
+                          print('\n=======================================');
+                          print('COPIED P2P LINK: $link');
+                          print('=======================================\n');
                           ScaffoldMessenger.of(context).showSnackBar(
                             SnackBar(content: Text('Copied P2P Link: $link')),
                           );
