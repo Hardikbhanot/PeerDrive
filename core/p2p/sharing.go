@@ -213,6 +213,19 @@ func (sm *ShareManager) RequestShare(ctx context.Context, peerIDString string, s
 		}
 	}
 
+	// Verify File Integrity (Root Hash)
+	fmt.Printf("Verifying file integrity...\n")
+	meta, err := storage.ChunkFile(downloadPath)
+	if err != nil {
+		os.Remove(downloadPath)
+		return fmt.Errorf("failed to hash downloaded file: %w", err)
+	}
+	if meta.RootHash != res.RootHash {
+		os.Remove(downloadPath)
+		return fmt.Errorf("file integrity verification failed! Expected %s but got %s", res.RootHash, meta.RootHash)
+	}
+	fmt.Printf("File integrity verified successfully!\n")
+
 	seederShare := storage.Share{
 		ID:        shareID,
 		Path:      downloadPath,
