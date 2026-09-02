@@ -51,7 +51,7 @@ func NewDaemon(configDir string, apiPort int, publicURL string) (*Daemon, error)
 	}
 
 	// Setup Share Manager
-	sm := p2p.NewShareManager(node.Host, db)
+	sm := p2p.NewShareManager(node, db)
 
 	// Start mDNS Discovery
 	if err := p2p.SetupDiscovery(node.Host); err != nil {

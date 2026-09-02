@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -15,6 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ipfs/go-cid"
+	"github.com/multiformats/go-multihash"
 	"github.com/peerdrive/core/p2p"
 	"github.com/peerdrive/core/storage"
 )
@@ -201,8 +204,19 @@ func (s *Server) handleCreateShare(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.db.CreateShare(share); err != nil {
-		http.Error(w, fmt.Sprintf("Failed to save share: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Errorf("Failed to save share: %v", err).Error(), http.StatusInternalServerError)
 		return
+	}
+
+	// Announce to DHT
+	if s.node.DHT != nil {
+		go func() {
+			hashBytes, _ := hex.DecodeString(share.RootHash)
+			mh, _ := multihash.Encode(hashBytes, multihash.SHA2_256)
+			c := cid.NewCidV1(cid.Raw, mh)
+			s.node.DHT.Provide(context.Background(), c, true)
+			fmt.Printf("Announced to DHT as seeder for %s!\n", share.ID)
+		}()
 	}
 
 	w.Header().Set("Content-Type", "application/json")

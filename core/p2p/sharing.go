@@ -2,23 +2,27 @@ package p2p
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
-	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/ipfs/go-cid"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/multiformats/go-multihash"
 	"github.com/peerdrive/core/storage"
 )
 
 const ShareProtocol = "/peerdrive/share/1.0.0"
 
 type ShareManager struct {
-	host host.Host
+	node *Node
 	db   *storage.DB
 }
 
@@ -29,21 +33,22 @@ type ShareRequest struct {
 }
 
 type ShareResponse struct {
-	Status      string `json:"status"` // "ok", "error"
-	Error       string `json:"error,omitempty"`
-	RootHash    string `json:"root_hash,omitempty"`
-	FileName    string `json:"file_name,omitempty"`
-	FileSize    int64  `json:"file_size,omitempty"`
-	TotalChunks int    `json:"total_chunks,omitempty"`
-	Data        []byte `json:"data,omitempty"` // for get_chunk
+	Status      string   `json:"status"` // "ok", "error"
+	Error       string   `json:"error,omitempty"`
+	RootHash    string   `json:"root_hash,omitempty"`
+	FileName    string   `json:"file_name,omitempty"`
+	FileSize    int64    `json:"file_size,omitempty"`
+	TotalChunks int      `json:"total_chunks,omitempty"`
+	ChunkHashes []string `json:"chunk_hashes,omitempty"` // for per-chunk verification
+	Data        []byte   `json:"data,omitempty"`         // for get_chunk
 }
 
-func NewShareManager(h host.Host, db *storage.DB) *ShareManager {
+func NewShareManager(n *Node, db *storage.DB) *ShareManager {
 	sm := &ShareManager{
-		host: h,
+		node: n,
 		db:   db,
 	}
-	h.SetStreamHandler(ShareProtocol, sm.handleStream)
+	n.Host.SetStreamHandler(ShareProtocol, sm.handleStream)
 	return sm
 }
 
@@ -92,9 +97,15 @@ func (sm *ShareManager) handleStream(s network.Stream) {
 				encoder.Encode(ShareResponse{Status: "error", Error: "file missing"})
 				return
 			}
-			totalChunks := int(stat.Size() / storage.DefaultChunkSize)
-			if stat.Size()%storage.DefaultChunkSize != 0 {
-				totalChunks++
+			meta, err := storage.ChunkFile(share.Path)
+			if err != nil {
+				encoder.Encode(ShareResponse{Status: "error", Error: "file hashing failed"})
+				return
+			}
+
+			hashes := make([]string, len(meta.Chunks))
+			for i, c := range meta.Chunks {
+				hashes[i] = c.Hash
 			}
 
 			encoder.Encode(ShareResponse{
@@ -102,7 +113,8 @@ func (sm *ShareManager) handleStream(s network.Stream) {
 				RootHash:    share.RootHash,
 				FileName:    filepath.Base(share.Path),
 				FileSize:    stat.Size(),
-				TotalChunks: totalChunks,
+				TotalChunks: len(meta.Chunks),
+				ChunkHashes: hashes,
 			})
 			
 		case "get_chunk":
@@ -138,39 +150,84 @@ func (sm *ShareManager) handleStream(s network.Stream) {
 	}
 }
 
+func hashToCID(hashHex string) (cid.Cid, error) {
+	hashBytes, err := hex.DecodeString(hashHex)
+	if err != nil {
+		return cid.Undef, err
+	}
+	mh, err := multihash.Encode(hashBytes, multihash.SHA2_256)
+	if err != nil {
+		return cid.Undef, err
+	}
+	return cid.NewCidV1(cid.Raw, mh), nil
+}
+
 // RequestShare is called by the downloading peer
 func (sm *ShareManager) RequestShare(ctx context.Context, peerIDString string, shareID string, onProgress func(int64)) error {
-	peerID, err := peer.Decode(peerIDString)
+	hostPeerID, err := peer.Decode(peerIDString)
 	if err != nil {
-		return fmt.Errorf("invalid peer id: %w", err)
+		return fmt.Errorf("invalid host peer id: %w", err)
 	}
 
-	s, err := sm.host.NewStream(ctx, peerID, ShareProtocol)
+	// 1. Contact host to get metadata (TotalChunks and ChunkHashes)
+	s, err := sm.node.Host.NewStream(ctx, hostPeerID, ShareProtocol)
 	if err != nil {
 		return fmt.Errorf("failed to open stream to host: %w", err)
 	}
-	defer s.Close()
 
 	encoder := json.NewEncoder(s)
 	decoder := json.NewDecoder(s)
 
-	req := ShareRequest{
-		Action:  "join",
-		ShareID: shareID,
-	}
+	req := ShareRequest{Action: "join", ShareID: shareID}
 	if err := encoder.Encode(&req); err != nil {
-		return fmt.Errorf("failed to send request: %w", err)
+		s.Close()
+		return fmt.Errorf("failed to send join request: %w", err)
 	}
 
 	var res ShareResponse
 	if err := decoder.Decode(&res); err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
+		s.Close()
+		return fmt.Errorf("failed to read join response: %w", err)
 	}
+	s.Close()
 
 	if res.Status != "ok" {
 		return fmt.Errorf("host rejected join: %s", res.Error)
 	}
 
+	if len(res.ChunkHashes) != res.TotalChunks {
+		return fmt.Errorf("host did not provide all chunk hashes (got %d, expected %d)", len(res.ChunkHashes), res.TotalChunks)
+	}
+
+	// 2. Discover other peers (seeders) via DHT
+	fmt.Printf("Discovering peers for %s...\n", shareID)
+	c, err := hashToCID(res.RootHash)
+	if err != nil {
+		return fmt.Errorf("invalid root hash: %w", err)
+	}
+	
+	// We always have the host. Let's find more.
+	providers := sm.node.DHT.FindProvidersAsync(ctx, c, 10)
+	var peers []peer.ID
+	peers = append(peers, hostPeerID) // Always include the host
+	
+	timeout := time.After(3 * time.Second)
+	collecting := true
+	for collecting {
+		select {
+		case p, ok := <-providers:
+			if !ok {
+				collecting = false
+			} else if p.ID != sm.node.Host.ID() && p.ID != hostPeerID {
+				peers = append(peers, p.ID)
+			}
+		case <-timeout:
+			collecting = false
+		}
+	}
+	fmt.Printf("Found %d seeders for swarm!\n", len(peers))
+
+	// 3. Setup Multithreaded Download
 	downloadPath := filepath.Join(os.TempDir(), "peerdrive_"+res.FileName)
 	out, err := os.Create(downloadPath)
 	if err != nil {
@@ -182,39 +239,96 @@ func (sm *ShareManager) RequestShare(ctx context.Context, peerIDString string, s
 	if onProgress != nil {
 		onProgress(downloaded)
 	}
-
+	
+	var fileMu sync.Mutex
+	chunkQueue := make(chan int, res.TotalChunks)
 	for i := 0; i < res.TotalChunks; i++ {
-		req := ShareRequest{
-			Action:  "get_chunk",
-			ShareID: shareID,
-			Index:   i,
-		}
-		if err := encoder.Encode(&req); err != nil {
-			return fmt.Errorf("failed to request chunk %d: %w", i, err)
-		}
+		chunkQueue <- i
+	}
+	close(chunkQueue)
 
-		var chunkRes ShareResponse
-		if err := decoder.Decode(&chunkRes); err != nil {
-			return fmt.Errorf("failed to read chunk %d: %w", i, err)
-		}
+	var wg sync.WaitGroup
+	errCh := make(chan error, res.TotalChunks)
 
-		if chunkRes.Status != "ok" {
-			return fmt.Errorf("host error on chunk %d: %s", i, chunkRes.Error)
-		}
+	// Spawn a worker for each peer
+	for _, pID := range peers {
+		wg.Add(1)
+		go func(workerPeer peer.ID) {
+			defer wg.Done()
+			
+			// Open a single stream to this peer to reuse for multiple chunks
+			stream, err := sm.node.Host.NewStream(ctx, workerPeer, ShareProtocol)
+			if err != nil {
+				fmt.Printf("Worker failed to connect to peer %s: %v\n", workerPeer, err)
+				return // Peer offline or unreachable
+			}
+			defer stream.Close()
+			
+			wEncoder := json.NewEncoder(stream)
+			wDecoder := json.NewDecoder(stream)
+			
+			for chunkIdx := range chunkQueue {
+				// Request the chunk
+				chunkReq := ShareRequest{Action: "get_chunk", ShareID: shareID, Index: chunkIdx}
+				if err := wEncoder.Encode(&chunkReq); err != nil {
+					errCh <- fmt.Errorf("worker %s failed to send chunk req: %w", workerPeer, err)
+					return
+				}
+				
+				var chunkRes ShareResponse
+				if err := wDecoder.Decode(&chunkRes); err != nil {
+					errCh <- fmt.Errorf("worker %s failed to read chunk: %w", workerPeer, err)
+					return
+				}
+				if chunkRes.Status != "ok" {
+					errCh <- fmt.Errorf("worker %s host error: %s", workerPeer, chunkRes.Error)
+					return
+				}
+				
+				// 4. Verify Per-Chunk Hash
+				h := sha256.New()
+				h.Write(chunkRes.Data)
+				calculatedHash := hex.EncodeToString(h.Sum(nil))
+				
+				if calculatedHash != res.ChunkHashes[chunkIdx] {
+					errCh <- fmt.Errorf("chunk %d corrupted from peer %s", chunkIdx, workerPeer)
+					return
+				}
 
-		n, err := out.Write(chunkRes.Data)
-		if err != nil {
-			return fmt.Errorf("failed to write chunk %d to disk: %w", i, err)
-		}
-		
-		downloaded += int64(n)
-		if onProgress != nil {
-			onProgress(downloaded)
-		}
+				// Write to file concurrently
+				fileMu.Lock()
+				offset := int64(chunkIdx) * storage.DefaultChunkSize
+				out.Seek(offset, io.SeekStart)
+				n, wErr := out.Write(chunkRes.Data)
+				downloaded += int64(n)
+				if onProgress != nil {
+					onProgress(downloaded)
+				}
+				fileMu.Unlock()
+				
+				if wErr != nil {
+					errCh <- fmt.Errorf("failed to write chunk %d: %w", chunkIdx, wErr)
+					return
+				}
+			}
+		}(pID)
 	}
 
-	// Verify File Integrity (Root Hash)
-	fmt.Printf("Verifying file integrity...\n")
+	wg.Wait()
+	close(errCh)
+	
+	if len(errCh) > 0 {
+		var firstErr error
+		for err := range errCh {
+			firstErr = err
+			break
+		}
+		os.Remove(downloadPath)
+		return fmt.Errorf("download failed: %v", firstErr)
+	}
+
+	// 5. Final Verification (Root Hash) as double check
+	fmt.Printf("Verifying final file integrity...\n")
 	meta, err := storage.ChunkFile(downloadPath)
 	if err != nil {
 		os.Remove(downloadPath)
@@ -224,8 +338,8 @@ func (sm *ShareManager) RequestShare(ctx context.Context, peerIDString string, s
 		os.Remove(downloadPath)
 		return fmt.Errorf("file integrity verification failed! Expected %s but got %s", res.RootHash, meta.RootHash)
 	}
-	fmt.Printf("File integrity verified successfully!\n")
 
+	// 6. Become a Seeder!
 	seederShare := storage.Share{
 		ID:        shareID,
 		Path:      downloadPath,
@@ -235,6 +349,12 @@ func (sm *ShareManager) RequestShare(ctx context.Context, peerIDString string, s
 		CreatedAt: time.Now(),
 	}
 	sm.db.CreateShare(seederShare)
+	
+	// Announce to DHT
+	if sm.node.DHT != nil {
+		sm.node.DHT.Provide(context.Background(), c, true)
+		fmt.Printf("Announced to DHT as seeder for %s!\n", shareID)
+	}
 
 	return nil
 }
