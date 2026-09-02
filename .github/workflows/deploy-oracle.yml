@@ -3,12 +3,12 @@ name: Deploy PeerDrive to Oracle
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    tags:
+      - 'v*'
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
 
     steps:
       - name: Checkout code
@@ -35,7 +35,7 @@ jobs:
           key: ${{ secrets.ORACLE_SSH_KEY }}
           port: ${{ secrets.ORACLE_PORT || 22 }}
           source: core/peerdrive
-          target: /opt/peerdrive/releases/${{ github.sha }}/
+          target: /home/${{ secrets.ORACLE_USER }}/peerdrive/releases/${{ github.sha }}/
 
       - name: Restart PeerDrive on Oracle
         uses: appleboy/ssh-action@v1.0.0
@@ -46,9 +46,8 @@ jobs:
           port: ${{ secrets.ORACLE_PORT || 22 }}
           script: |
             set -e
-            sudo mkdir -p /opt/peerdrive/current
-            sudo install -m 0755 /opt/peerdrive/releases/${{ github.sha }}/peerdrive /opt/peerdrive/current/peerdrive
-            sudo mkdir -p /var/lib/peerdrive
+            sudo mkdir -p /opt/peerdrive/current /var/lib/peerdrive
+            sudo install -m 0755 /home/${{ secrets.ORACLE_USER }}/peerdrive/releases/${{ github.sha }}/peerdrive /opt/peerdrive/current/peerdrive
             sudo tee /etc/systemd/system/peerdrive.service >/dev/null <<'EOF'
             [Unit]
             Description=PeerDrive daemon
@@ -56,11 +55,11 @@ jobs:
 
             [Service]
             Type=simple
+            User=ubuntu
             WorkingDirectory=/opt/peerdrive/current
-            ExecStart=/opt/peerdrive/current/peerdrive --config /var/lib/peerdrive --port 8080 --public-url $PUBLIC_URL
+            ExecStart=/opt/peerdrive/current/peerdrive --config /var/lib/peerdrive --port 8081 --public-url https://peerdrive.yourdomain.com
             Restart=always
             RestartSec=5
-            Environment=PUBLIC_URL=${{ secrets.PUBLIC_URL }}
 
             [Install]
             WantedBy=multi-user.target
