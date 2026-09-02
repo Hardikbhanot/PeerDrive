@@ -83,3 +83,5 @@ jobs:
             sudo systemctl enable peerdrive
             sudo systemctl restart peerdrive
             sudo systemctl status peerdrive --no-pager --lines=20
+            curl --fail --retry 5 --retry-delay 1 http://127.0.0.1:8081/api/status
+            curl --fail --retry 5 --retry-delay 1 http://127.0.0.1:8081/
