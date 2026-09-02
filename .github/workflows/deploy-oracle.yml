@@ -27,14 +27,17 @@ jobs:
           go test ./...
           CGO_ENABLED=1 go build -o peerdrive .
 
-      - name: Upload binary to Oracle
+      - name: Package release
+        run: tar -czf peerdrive-release.tar.gz -C core peerdrive ui
+
+      - name: Upload release to Oracle
         uses: appleboy/scp-action@v1.0.0
         with:
           host: ${{ secrets.ORACLE_HOST }}
           username: ${{ secrets.ORACLE_USER }}
           key: ${{ secrets.ORACLE_SSH_KEY }}
           port: ${{ secrets.ORACLE_PORT || 22 }}
-          source: core/
+          source: peerdrive-release.tar.gz
           target: /home/${{ secrets.ORACLE_USER }}/peerdrive/releases/${{ github.sha }}/
 
       - name: Restart PeerDrive on Oracle
@@ -46,11 +49,19 @@ jobs:
           port: ${{ secrets.ORACLE_PORT || 22 }}
           script: |
             set -e
+            release_dir="/home/${{ secrets.ORACLE_USER }}/peerdrive/releases/${{ github.sha }}"
+            tar -xzf "$release_dir/peerdrive-release.tar.gz" -C "$release_dir"
+            test -x "$release_dir/peerdrive"
+            test -f "$release_dir/ui/index.html"
             sudo mkdir -p /opt/peerdrive/current /var/lib/peerdrive
             sudo chown ubuntu:ubuntu /var/lib/peerdrive
             sudo chmod 755 /var/lib/peerdrive
-            sudo install -m 0755 /home/${{ secrets.ORACLE_USER }}/peerdrive/releases/${{ github.sha }}/core/peerdrive /opt/peerdrive/current/peerdrive
-            sudo cp -r /home/${{ secrets.ORACLE_USER }}/peerdrive/releases/${{ github.sha }}/core/ui /opt/peerdrive/current/ || true
+            sudo install -m 0755 "$release_dir/peerdrive" /opt/peerdrive/current/peerdrive.new
+            sudo rm -rf /opt/peerdrive/current/ui.new
+            sudo cp -r "$release_dir/ui" /opt/peerdrive/current/ui.new
+            sudo mv /opt/peerdrive/current/peerdrive.new /opt/peerdrive/current/peerdrive
+            sudo rm -rf /opt/peerdrive/current/ui
+            sudo mv /opt/peerdrive/current/ui.new /opt/peerdrive/current/ui
             sudo chown -R ubuntu:ubuntu /opt/peerdrive/current
             sudo tee /etc/systemd/system/peerdrive.service >/dev/null <<'EOF'
             [Unit]
