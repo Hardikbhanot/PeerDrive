@@ -6,9 +6,9 @@ services:
     image: peerdrive:local
     container_name: peerdrive
     ports:
-      - "8081:8080"
+      - "8085:8080"
     environment:
-      PEERDRIVE_PUBLIC_URL: ${PEERDRIVE_PUBLIC_URL:-http://localhost:8081}
+      PEERDRIVE_PUBLIC_URL: ${PEERDRIVE_PUBLIC_URL:-http://localhost:8085}
     volumes:
       - peerdrive_data:/data
     restart: unless-stopped
