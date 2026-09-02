@@ -50,6 +50,7 @@ func (s *Server) Start(port int) error {
 	mux.HandleFunc("POST /api/shares/{id}/revoke", s.handleRevoke)
 	mux.HandleFunc("POST /api/download", s.handleDownload)
 	mux.HandleFunc("POST /api/dialog/file", s.handlePickFile)
+	mux.HandleFunc("GET /api/shares/{id}/peers", s.handleGetPeers)
 	mux.HandleFunc("GET /d/{token}", s.handleDirectDownload)
 	
 	// Serve static frontend files
@@ -334,12 +335,28 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	req.ShareID = strings.TrimSpace(req.ShareID)
 	req.HostPeerID = strings.TrimSpace(req.HostPeerID)
 
-	// Tell the share manager to request the share from the host
-	err := s.shareManager.RequestShare(r.Context(), req.HostPeerID, req.ShareID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+	// Tell the share manager to request the share from the host in a goroutine
+	go func() {
+		err := s.shareManager.RequestShare(context.Background(), req.HostPeerID, req.ShareID, func(downloaded int64) {
+			s.mu.Lock()
+			s.Progress[req.ShareID] = downloaded
+			s.mu.Unlock()
+		})
+		if err != nil {
+			fmt.Printf("Download failed: %v\n", err)
+		}
+	}()
 
 	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleGetPeers(w http.ResponseWriter, r *http.Request) {
+	// For MVP, mock seeders based on DHT / connected peers
+	// In a real app, this would use DHT FindProviders
+	peers := map[string]int{
+		"seeders":  1 + len(s.node.Host.Network().Peers())/2,
+		"leechers": len(s.node.Host.Network().Peers()) % 2,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(peers)
 }

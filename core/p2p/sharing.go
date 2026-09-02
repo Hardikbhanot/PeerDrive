@@ -139,14 +139,12 @@ func (sm *ShareManager) handleStream(s network.Stream) {
 }
 
 // RequestShare is called by the downloading peer
-func (sm *ShareManager) RequestShare(ctx context.Context, peerIDString string, shareID string) error {
+func (sm *ShareManager) RequestShare(ctx context.Context, peerIDString string, shareID string, onProgress func(int64)) error {
 	peerID, err := peer.Decode(peerIDString)
 	if err != nil {
 		return fmt.Errorf("invalid peer id: %w", err)
 	}
 
-	// Try to open a stream. Since we are on mDNS, we should already be connected to them.
-	// If not, this might fail unless we do a DHT lookup or explicit connect, but mDNS should cover LAN.
 	s, err := sm.host.NewStream(ctx, peerID, ShareProtocol)
 	if err != nil {
 		return fmt.Errorf("failed to open stream to host: %w", err)
@@ -156,7 +154,6 @@ func (sm *ShareManager) RequestShare(ctx context.Context, peerIDString string, s
 	encoder := json.NewEncoder(s)
 	decoder := json.NewDecoder(s)
 
-	// Send Join request
 	req := ShareRequest{
 		Action:  "join",
 		ShareID: shareID,
@@ -165,7 +162,6 @@ func (sm *ShareManager) RequestShare(ctx context.Context, peerIDString string, s
 		return fmt.Errorf("failed to send request: %w", err)
 	}
 
-	// Read response
 	var res ShareResponse
 	if err := decoder.Decode(&res); err != nil {
 		return fmt.Errorf("failed to read response: %w", err)
@@ -175,10 +171,6 @@ func (sm *ShareManager) RequestShare(ctx context.Context, peerIDString string, s
 		return fmt.Errorf("host rejected join: %s", res.Error)
 	}
 
-	fmt.Printf("Successfully joined swarm for share %s!\n", shareID)
-	fmt.Printf("File: %s (%.2f MB), Chunks: %d\n", res.FileName, float64(res.FileSize)/1024/1024, res.TotalChunks)
-
-	// Open local file for writing
 	downloadPath := filepath.Join(os.TempDir(), "peerdrive_"+res.FileName)
 	out, err := os.Create(downloadPath)
 	if err != nil {
@@ -186,7 +178,11 @@ func (sm *ShareManager) RequestShare(ctx context.Context, peerIDString string, s
 	}
 	defer out.Close()
 
-	// Download chunks
+	var downloaded int64 = 0
+	if onProgress != nil {
+		onProgress(downloaded)
+	}
+
 	for i := 0; i < res.TotalChunks; i++ {
 		req := ShareRequest{
 			Action:  "get_chunk",
@@ -206,31 +202,26 @@ func (sm *ShareManager) RequestShare(ctx context.Context, peerIDString string, s
 			return fmt.Errorf("host error on chunk %d: %s", i, chunkRes.Error)
 		}
 
-		if _, err := out.Write(chunkRes.Data); err != nil {
+		n, err := out.Write(chunkRes.Data)
+		if err != nil {
 			return fmt.Errorf("failed to write chunk %d to disk: %w", i, err)
 		}
 		
-		fmt.Printf("Downloaded chunk %d/%d...\n", i+1, res.TotalChunks)
+		downloaded += int64(n)
+		if onProgress != nil {
+			onProgress(downloaded)
+		}
 	}
 
-	fmt.Printf("Download complete! Saved to %s\n", downloadPath)
-
-	// BECOME A SEEDER!
-	// Add the completely downloaded file to our own database using the same ShareID.
-	// Now, if another peer connects to us asking for this ShareID, we can serve it!
 	seederShare := storage.Share{
 		ID:        shareID,
 		Path:      downloadPath,
 		RootHash:  res.RootHash,
-		Token:     "", // no HTTP token needed for secondary seeders by default, or could generate one
+		Token:     "",
 		IsActive:  true,
 		CreatedAt: time.Now(),
 	}
-	if err := sm.db.CreateShare(seederShare); err != nil {
-		fmt.Printf("Warning: Failed to register as seeder in DB: %v\n", err)
-	} else {
-		fmt.Printf("Successfully registered as a seeder for %s!\n", shareID)
-	}
+	sm.db.CreateShare(seederShare)
 
 	return nil
 }

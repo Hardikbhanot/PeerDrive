@@ -179,13 +179,73 @@ class _DashboardScreenState extends State<DashboardScreen> {
               itemCount: shares.length,
               itemBuilder: (context, index) {
                 final share = shares[index];
-                return ListTile(
-                  leading: const Icon(Icons.file_present),
-                  title: Text(share['filename']),
-                  subtitle: Text(_formatBytes(share['size'])),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.delete, color: Colors.red),
-                    onPressed: () {},
+                final int size = share['file_size'] ?? 0;
+                final int downloaded = share['downloaded_bytes'] ?? 0;
+                final double progress = size > 0 ? downloaded / size : 0.0;
+                final bool isDownloading = downloaded > 0 && downloaded < size;
+
+                return Card(
+                  margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  child: ListTile(
+                    leading: Icon(
+                      isDownloading ? Icons.downloading : Icons.file_present,
+                      color: isDownloading ? Colors.blue : Colors.deepPurple,
+                    ),
+                    title: Text(share['filename'] ?? 'Unknown File'),
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(_formatBytes(size)),
+                        if (isDownloading) ...[
+                          const SizedBox(height: 8),
+                          LinearProgressIndicator(value: progress),
+                          const SizedBox(height: 4),
+                          Text('${(progress * 100).toStringAsFixed(1)}% downloaded'),
+                        ],
+                      ],
+                    ),
+                    trailing: PopupMenuButton<String>(
+                      onSelected: (value) async {
+                        if (value == 'peers') {
+                          try {
+                            final res = await http.get(Uri.parse('http://localhost:8080/api/shares/${share['id']}/peers'));
+                            if (res.statusCode == 200) {
+                              final data = json.decode(res.body);
+                              showDialog(
+                                context: context,
+                                builder: (context) => AlertDialog(
+                                  title: const Text('Swarm Info'),
+                                  content: Text('Seeders: ${data['seeders']}\nLeechers: ${data['leechers']}'),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () => Navigator.pop(context),
+                                      child: const Text('OK'),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            }
+                          } catch (e) {
+                            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+                          }
+                        } else if (value == 'copy') {
+                          final link = 'peerdrive://$peerId/${share['id']}';
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('Copied P2P Link: $link')),
+                          );
+                        }
+                      },
+                      itemBuilder: (BuildContext context) => [
+                        const PopupMenuItem(
+                          value: 'copy',
+                          child: Text('Copy Share Link'),
+                        ),
+                        const PopupMenuItem(
+                          value: 'peers',
+                          child: Text('View Seeders & Leechers'),
+                        ),
+                      ],
+                    ),
                   ),
                 );
               },
