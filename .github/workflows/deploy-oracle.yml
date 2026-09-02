@@ -1,0 +1,71 @@
+name: Deploy PeerDrive to Oracle
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+          cache: true
+          cache-dependency-path: core/go.sum
+
+      - name: Build production binary
+        working-directory: core
+        run: |
+          go test ./...
+          CGO_ENABLED=1 go build -o peerdrive .
+
+      - name: Upload binary to Oracle
+        uses: appleboy/scp-action@v1.0.0
+        with:
+          host: ${{ secrets.ORACLE_HOST }}
+          username: ${{ secrets.ORACLE_USER }}
+          key: ${{ secrets.ORACLE_SSH_KEY }}
+          port: ${{ secrets.ORACLE_PORT || 22 }}
+          source: core/peerdrive
+          target: /opt/peerdrive/releases/${{ github.sha }}/
+
+      - name: Restart PeerDrive on Oracle
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.ORACLE_HOST }}
+          username: ${{ secrets.ORACLE_USER }}
+          key: ${{ secrets.ORACLE_SSH_KEY }}
+          port: ${{ secrets.ORACLE_PORT || 22 }}
+          script: |
+            set -e
+            sudo mkdir -p /opt/peerdrive/current
+            sudo install -m 0755 /opt/peerdrive/releases/${{ github.sha }}/peerdrive /opt/peerdrive/current/peerdrive
+            sudo mkdir -p /var/lib/peerdrive
+            sudo tee /etc/systemd/system/peerdrive.service >/dev/null <<'EOF'
+            [Unit]
+            Description=PeerDrive daemon
+            After=network.target
+
+            [Service]
+            Type=simple
+            WorkingDirectory=/opt/peerdrive/current
+            ExecStart=/opt/peerdrive/current/peerdrive --config /var/lib/peerdrive --port 8080 --public-url $PUBLIC_URL
+            Restart=always
+            RestartSec=5
+            Environment=PUBLIC_URL=${{ secrets.PUBLIC_URL }}
+
+            [Install]
+            WantedBy=multi-user.target
+            EOF
+            sudo systemctl daemon-reload
+            sudo systemctl enable peerdrive
+            sudo systemctl restart peerdrive
+            sudo systemctl status peerdrive --no-pager --lines=20

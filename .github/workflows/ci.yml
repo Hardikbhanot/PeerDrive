@@ -1,0 +1,37 @@
+name: PeerDrive CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: core
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+          cache: true
+          cache-dependency-path: core/go.sum
+
+      - name: Run Go tests
+        run: go test ./...
+
+      - name: Build binary
+        run: go build -o peerdrive .
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: peerdrive-binary
+          path: core/peerdrive

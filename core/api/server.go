@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -133,29 +134,65 @@ func (s *Server) handleCreateShare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req CreateShareRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request", http.StatusBadRequest)
+	var filePath string
+	var err error
+
+	if strings.Contains(r.Header.Get("Content-Type"), "multipart/form-data") {
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to read uploaded file: %v", err), http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+
+		fileName := header.Filename
+		if fileName == "" {
+			fileName = "uploaded-file"
+		}
+		filePath = filepath.Join(os.TempDir(), fmt.Sprintf("peerdrive-%d-%s", time.Now().UnixNano(), filepath.Base(fileName)))
+
+		tmpFile, err := os.Create(filePath)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to create temp file: %v", err), http.StatusInternalServerError)
+			return
+		}
+		defer tmpFile.Close()
+
+		if _, err := io.Copy(tmpFile, file); err != nil {
+			http.Error(w, fmt.Sprintf("Failed to save uploaded file: %v", err), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		var req CreateShareRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request", http.StatusBadRequest)
+			return
+		}
+		filePath = req.Path
+	}
+
+	if filePath == "" {
+		http.Error(w, "No file selected", http.StatusBadRequest)
 		return
 	}
 
-	// Chunk the file to get metadata
-	meta, err := storage.ChunkFile(req.Path)
+	meta, err := storage.ChunkFile(filePath)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to process file: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	// Generate a Share ID
-	shareID := fmt.Sprintf("SHARE-%x", meta.RootHash[:8]) // simple ID for now
-	// Generate a secure random token for direct HTTP download
+	shareID := fmt.Sprintf("SHARE-%x", meta.RootHash[:8])
 	tokenBytes := make([]byte, 16)
-	rand.Read(tokenBytes)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to generate token: %v", err), http.StatusInternalServerError)
+		return
+	}
 	token := hex.EncodeToString(tokenBytes)
 
 	share := storage.Share{
 		ID:        shareID,
-		Path:      req.Path,
+		Path:      filePath,
 		RootHash:  meta.RootHash,
 		Token:     token,
 		IsActive:  true,
@@ -214,29 +251,41 @@ func (s *Server) handlePickFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use osascript to show native macOS file picker (avoids main thread Cocoa issues)
-	cmd := exec.Command("osascript", "-e", `POSIX path of (choose file with prompt "Select a file to share")`)
-	out, err := cmd.Output()
-	if err != nil {
-		if exitError, ok := err.(*exec.ExitError); ok {
-			// -128 is "User cancelled"
-			if strings.Contains(string(exitError.Stderr), "-128") {
-				w.WriteHeader(http.StatusNoContent)
-				return
-			}
+	candidates := [][]string{
+		{"osascript", "-e", `POSIX path of (choose file with prompt "Select a file to share")`},
+		{"zenity", "--file-selection", "--title=Select a file to share"},
+		{"kdialog", "--getopenfilename", "."},
+	}
+
+	for _, args := range candidates {
+		if _, err := exec.LookPath(args[0]); err != nil {
+			continue
 		}
-		http.Error(w, fmt.Sprintf("Failed to open dialog: %v (stderr: %s)", err, out), http.StatusInternalServerError)
+
+		cmd := exec.Command(args[0], args[1:]...)
+		out, err := cmd.Output()
+		if err != nil {
+			if exitError, ok := err.(*exec.ExitError); ok {
+				if strings.Contains(string(exitError.Stderr), "-128") || strings.Contains(string(exitError.Stderr), "cancelled") {
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+			}
+			continue
+		}
+
+		path := strings.TrimSpace(string(out))
+		if path == "" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"path": path})
 		return
 	}
 
-	path := strings.TrimSpace(string(out))
-	if path == "" {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"path": path})
+	http.Error(w, "No supported file picker is available on this system. Use the browser file chooser in the dashboard.", http.StatusNotImplemented)
 }
 
 type AuthorizeRequest struct {

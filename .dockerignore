@@ -1,0 +1,9 @@
+.git
+.github
+mobile
+**/.DS_Store
+**/node_modules
+**/build
+**/dist
+**/.idea
+**/.vscode
