@@ -25,7 +25,7 @@ jobs:
         working-directory: core
         run: |
           go test ./... || true
-          CGO_ENABLED=1 go build -o peerdrive .
+          go build -o peerdrive .
 
       - name: Package release
         run: tar -czf peerdrive-release.tar.gz -C core peerdrive ui
