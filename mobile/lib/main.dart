@@ -82,9 +82,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _shareFile() async {
-    FilePickerResult? result = await FilePicker.platform.pickFiles();
-    if (result != null && result.files.single.path != null) {
-      final path = result.files.single.path!;
+    final PlatformFile? file = await FilePicker.pickFile();
+    if (file != null && file.path != null) {
+      final path = file.path!;
       
       // Call daemon API to share file
       try {
