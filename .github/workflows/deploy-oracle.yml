@@ -47,7 +47,7 @@ jobs:
           script: |
             set -e
             sudo mkdir -p /opt/peerdrive/current /var/lib/peerdrive
-            sudo install -m 0755 /home/${{ secrets.ORACLE_USER }}/peerdrive/releases/${{ github.sha }}/peerdrive /opt/peerdrive/current/peerdrive
+            sudo install -m 0755 /home/${{ secrets.ORACLE_USER }}/peerdrive/releases/${{ github.sha }}/core/peerdrive /opt/peerdrive/current/peerdrive
             sudo tee /etc/systemd/system/peerdrive.service >/dev/null <<'EOF'
             [Unit]
             Description=PeerDrive daemon
