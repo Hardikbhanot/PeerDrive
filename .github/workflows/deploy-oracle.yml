@@ -34,7 +34,7 @@ jobs:
           username: ${{ secrets.ORACLE_USER }}
           key: ${{ secrets.ORACLE_SSH_KEY }}
           port: ${{ secrets.ORACLE_PORT || 22 }}
-          source: core/peerdrive
+          source: core/
           target: /home/${{ secrets.ORACLE_USER }}/peerdrive/releases/${{ github.sha }}/
 
       - name: Restart PeerDrive on Oracle
@@ -50,6 +50,8 @@ jobs:
             sudo chown ubuntu:ubuntu /var/lib/peerdrive
             sudo chmod 755 /var/lib/peerdrive
             sudo install -m 0755 /home/${{ secrets.ORACLE_USER }}/peerdrive/releases/${{ github.sha }}/core/peerdrive /opt/peerdrive/current/peerdrive
+            sudo cp -r /home/${{ secrets.ORACLE_USER }}/peerdrive/releases/${{ github.sha }}/core/ui /opt/peerdrive/current/ || true
+            sudo chown -R ubuntu:ubuntu /opt/peerdrive/current
             sudo tee /etc/systemd/system/peerdrive.service >/dev/null <<'EOF'
             [Unit]
             Description=PeerDrive daemon
