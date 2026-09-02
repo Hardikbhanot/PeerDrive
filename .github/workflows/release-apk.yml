@@ -50,6 +50,7 @@ jobs:
       - name: Build Android APK
         working-directory: mobile
         run: |
+          mkdir -p ~/.config/.android ~/.android
           flutter pub get
           flutter build apk --release
 
