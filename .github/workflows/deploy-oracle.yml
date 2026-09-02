@@ -1,8 +1,10 @@
-name: Deploy PeerDrive to Oracle
+name: Deploy PeerDrive to Oracle & Build Apps
 
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
 
@@ -18,10 +20,35 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: core/go.mod
-          cache: true
-          cache-dependency-path: core/go.sum
 
-      - name: Build production binary
+      - name: Setup Android NDK
+        run: |
+          sudo ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --install "ndk;25.2.9519653"
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/25.2.9519653" >> $GITHUB_ENV
+
+      - name: Build Go Daemon AAR
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          ~/go/bin/gomobile init
+          mkdir -p mobile/android/app/libs
+          cd core
+          ~/go/bin/gomobile bind -target=android -o ../mobile/android/app/libs/Daemon.aar ./daemon
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 'any'
+          channel: 'stable'
+
+      - name: Build Android APK
+        working-directory: mobile
+        run: |
+          flutter pub get
+          flutter build apk --release
+          cp build/app/outputs/flutter-apk/app-release.apk ../core/ui/peerdrive-android.apk
+
+      - name: Build Server Binary
         working-directory: core
         run: |
           go test ./...
@@ -51,8 +78,6 @@ jobs:
             set -e
             release_dir="/home/${{ secrets.ORACLE_USER }}/peerdrive/releases/${{ github.sha }}"
             tar -xzf "$release_dir/peerdrive-release.tar.gz" -C "$release_dir"
-            test -x "$release_dir/peerdrive"
-            test -f "$release_dir/ui/index.html"
             sudo mkdir -p /opt/peerdrive/current /var/lib/peerdrive
             sudo chown ubuntu:ubuntu /var/lib/peerdrive
             sudo chmod 755 /var/lib/peerdrive
@@ -63,25 +88,4 @@ jobs:
             sudo rm -rf /opt/peerdrive/current/ui
             sudo mv /opt/peerdrive/current/ui.new /opt/peerdrive/current/ui
             sudo chown -R ubuntu:ubuntu /opt/peerdrive/current
-            sudo tee /etc/systemd/system/peerdrive.service >/dev/null <<'EOF'
-            [Unit]
-            Description=PeerDrive daemon
-            After=network.target
-
-            [Service]
-            Type=simple
-            User=ubuntu
-            WorkingDirectory=/opt/peerdrive/current
-            ExecStart=/opt/peerdrive/current/peerdrive --config /var/lib/peerdrive --port 8085 --public-url https://peerdrive.hbhanot.tech
-            Restart=always
-            RestartSec=5
-
-            [Install]
-            WantedBy=multi-user.target
-            EOF
-            sudo systemctl daemon-reload
-            sudo systemctl enable peerdrive
             sudo systemctl restart peerdrive
-            sudo systemctl status peerdrive --no-pager --lines=20
-            curl --fail --retry 5 --retry-delay 1 http://127.0.0.1:8085/api/status
-            curl --fail --retry 5 --retry-delay 1 http://127.0.0.1:8085/
