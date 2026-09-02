@@ -72,7 +72,7 @@ jobs:
             Type=simple
             User=ubuntu
             WorkingDirectory=/opt/peerdrive/current
-            ExecStart=/opt/peerdrive/current/peerdrive --config /var/lib/peerdrive --port 8085 --public-url https://peerdrive.yourdomain.com
+            ExecStart=/opt/peerdrive/current/peerdrive --config /var/lib/peerdrive --port 8085 --public-url https://peerdrive.hbhanot.tech
             Restart=always
             RestartSec=5
 
