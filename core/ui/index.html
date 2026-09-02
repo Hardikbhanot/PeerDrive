@@ -119,6 +119,8 @@
                         <td>
                             ${share.IsActive ? `
                                 <button class="btn" style="padding: 4px 8px; font-size: 12px; background: #8b5cf6;" onclick="showQR('${share.Token}')">QR Code</button>
+                                <button class="btn" style="padding: 4px 8px; font-size: 12px; background: #3b82f6;" onclick="navigator.clipboard.writeText('peerdrive://' + document.getElementById('peer-id-display').innerText + '/' + '${share.ID}'); alert('Copied peerdrive:// link to clipboard!')">Copy Link</button>
+                                <button class="btn" style="padding: 4px 8px; font-size: 12px; background: #f59e0b;" onclick="viewSwarm('${share.ID}')">Seeders</button>
                                 <button class="btn" style="padding: 4px 8px; font-size: 12px; background: #10b981;" onclick="authorizePeer('${share.ID}')">Authorize</button>
                                 <button class="btn" style="padding: 4px 8px; font-size: 12px; background: #ef4444;" onclick="revoke('${share.ID}')">Revoke</button>
                             ` : `<span style="color: #9ca3af; font-size: 12px;">No actions available</span>`}
@@ -211,10 +213,18 @@
         }
 
         async function joinShare() {
-            const shareID = prompt("Enter the Share ID:");
-            if (!shareID) return;
-            const hostPeerID = prompt("Enter the Host's Peer ID:");
-            if (!hostPeerID) return;
+            const link = prompt("Paste the peerdrive:// link:");
+            if (!link || !link.startsWith("peerdrive://")) {
+                if (link) alert("Invalid link format. Must start with peerdrive://");
+                return;
+            }
+            const parts = link.replace('peerdrive://', '').split('/');
+            if (parts.length < 2) {
+                alert("Invalid link format");
+                return;
+            }
+            const hostPeerID = parts[0];
+            const shareID = parts[1];
 
             try {
                 const res = await fetch(`/api/download`, {
@@ -225,10 +235,24 @@
                 if (!res.ok) {
                     alert("Failed to join share: " + await res.text());
                 } else {
-                    alert("Successfully joined swarm! Check the host terminal logs to see the data transfer happening.");
+                    alert("Successfully joined swarm! File is downloading...");
                 }
             } catch (err) {
                 alert("Error joining share.");
+            }
+        }
+
+        async function viewSwarm(shareID) {
+            try {
+                const res = await fetch(`/api/shares/${shareID}/peers`);
+                if (res.ok) {
+                    const data = await res.json();
+                    alert(`Swarm Info for ${shareID}:\nSeeders: ${data.seeders}\nLeechers: ${data.leechers}`);
+                } else {
+                    alert("Failed to fetch swarm info.");
+                }
+            } catch (err) {
+                alert("Error fetching swarm info.");
             }
         }
 
