@@ -112,6 +112,39 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
+  Future<void> _joinShare(String uri) async {
+    // Expected format: peerdrive://<peerId>/<shareId>
+    if (!uri.startsWith('peerdrive://')) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Invalid PeerDrive link')));
+      return;
+    }
+    
+    try {
+      final parts = uri.replaceFirst('peerdrive://', '').split('/');
+      if (parts.length < 2) throw Exception('Invalid link format');
+      
+      final hostPeerId = parts[0];
+      final shareId = parts[1];
+      
+      final response = await http.post(
+        Uri.parse('http://localhost:8080/api/download'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'share_id': shareId,
+          'host_peer_id': hostPeerId,
+        }),
+      );
+      
+      if (response.statusCode == 200) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Joining Swarm...')));
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: ${response.body}')));
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+    }
+  }
+
   Future<void> _scanQR() async {
     final result = await Navigator.push(
       context,
@@ -119,11 +152,37 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
     
     if (result != null && result is String) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Scanned: $result')),
-      );
-      // Here we will parse the P2P connection string and call /api/download
+      _joinShare(result);
     }
+  }
+
+  Future<void> _pasteLink() async {
+    TextEditingController controller = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Paste Share Link'),
+        content: TextField(
+          controller: controller,
+          decoration: const InputDecoration(hintText: 'peerdrive://...'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              if (controller.text.isNotEmpty) {
+                _joinShare(controller.text);
+              }
+            },
+            child: const Text('Join'),
+          ),
+        ],
+      ),
+    );
   }
 
   String _formatBytes(int bytes) {
@@ -166,10 +225,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
           ),
           const SizedBox(height: 16),
-          ElevatedButton.icon(
-            onPressed: isConnected ? _scanQR : null,
-            icon: const Icon(Icons.qr_code_scanner),
-            label: const Text('Scan QR to Join Share'),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              ElevatedButton.icon(
+                onPressed: isConnected ? _scanQR : null,
+                icon: const Icon(Icons.qr_code_scanner),
+                label: const Text('Scan QR'),
+              ),
+              const SizedBox(width: 16),
+              ElevatedButton.icon(
+                onPressed: isConnected ? _pasteLink : null,
+                icon: const Icon(Icons.link),
+                label: const Text('Paste Link'),
+              ),
+            ],
           ),
           const SizedBox(height: 16),
           const Divider(),
