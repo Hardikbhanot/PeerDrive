@@ -350,7 +350,7 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	req.HostPeerID = strings.TrimSpace(req.HostPeerID)
 
 	// Add placeholder to DB so it shows up in UI immediately
-	s.db.SaveShare(db.Share{
+	s.db.CreateShare(storage.Share{
 		ID:       req.ShareID,
 		Path:     "Downloading from Swarm...",
 		Token:    req.ShareID, // Mock token for leecher
@@ -367,14 +367,6 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			fmt.Printf("Download failed: %v\n", err)
 			s.db.RevokeShare(req.ShareID) // Remove from UI on failure
-		} else {
-			// Update the path to the actual downloads folder
-			s.db.SaveShare(db.Share{
-				ID:       req.ShareID,
-				Path:     "downloads/" + req.ShareID,
-				Token:    req.ShareID,
-				IsActive: true,
-			})
 		}
 	}()
 
