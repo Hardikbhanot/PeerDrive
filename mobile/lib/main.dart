@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:file_picker/file_picker.dart';
 import 'qr_scanner.dart';
@@ -300,6 +301,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           }
                         } else if (value == 'copy') {
                           final link = 'peerdrive://$peerId/${share['id']}';
+                          Clipboard.setData(ClipboardData(text: link));
                           ScaffoldMessenger.of(context).showSnackBar(
                             SnackBar(content: Text('Copied P2P Link: $link')),
                           );
