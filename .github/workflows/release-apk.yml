@@ -39,7 +39,7 @@ jobs:
           ~/go/bin/gomobile init
           mkdir -p mobile/android/app/libs
           cd core
-          ~/go/bin/gomobile bind -target=android/arm64 -androidapi 21 -o ../mobile/android/app/libs/Daemon.aar ./daemon
+          ~/go/bin/gomobile bind -target=android/arm64 -androidapi 21 -ldflags="-checklinkname=0" -o ../mobile/android/app/libs/Daemon.aar ./daemon
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
